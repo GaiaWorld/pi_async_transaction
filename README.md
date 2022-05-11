@@ -1,2 +1,2 @@
 # pi_async_transaction
-Asynchronous abstraction for transactions
+Asynchronous abstraction for transactions.
