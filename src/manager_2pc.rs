@@ -409,7 +409,7 @@ impl<
                         }
                         let child_copy = child.clone();
 
-                        if let Err(e) = map_reduce.map(AsyncRuntime::Multi(mgr.0.rt.clone()), async move {
+                        if let Err(e) = map_reduce.map(mgr.0.rt.clone(), async move {
                             //执行子单元事务的预提交
                             child_copy.set_status(Transaction2PcStatus::Prepareing); //更新子单元事务状态为正在预提交
 
@@ -434,7 +434,7 @@ impl<
                         //当前事务的子事务是事务树
                         let mgr_copy = mgr.clone();
 
-                        if let Err(e) = map_reduce.map(AsyncRuntime::Multi(mgr.0.rt.clone()), async move {
+                        if let Err(e) = map_reduce.map(mgr.0.rt.clone(), async move {
                             //执行子事务树的预提交
                             let child_uid = child.get_transaction_uid();
                             let prepare_uid = child.get_prepare_uid();
@@ -714,7 +714,7 @@ impl<
                         let child_copy = child.clone();
                         let confirm_copy = confirm.clone();
 
-                        if let Err(e) = map_reduce.map(AsyncRuntime::Multi(mgr.0.rt.clone()), async move {
+                        if let Err(e) = map_reduce.map(mgr.0.rt.clone(), async move {
                             //执行子单元事务的延迟提交
                             child_copy.set_status(Transaction2PcStatus::Commiting); //更新子单元事务状态为正在提交
 
@@ -741,7 +741,7 @@ impl<
                         let child_copy = child.clone();
                         let confirm_copy = confirm.clone();
 
-                        if let Err(e) = map_reduce.map(AsyncRuntime::Multi(mgr.0.rt.clone()), async move {
+                        if let Err(e) = map_reduce.map(mgr.0.rt.clone(), async move {
                             //执行子事务树的延迟提交
                             let child_uid = child.get_transaction_uid();
                             let commit_uid = child.get_commit_uid();
@@ -917,7 +917,7 @@ impl<
                         //当前事务的子事务是单元事务
                         let child_copy = child.clone();
 
-                        if let Err(e) = map_reduce.map(AsyncRuntime::Multi(mgr.0.rt.clone()), async move {
+                        if let Err(e) = map_reduce.map(mgr.0.rt.clone(), async move {
                             //执行子单元事务的回滚
                             child_copy.set_status(Transaction2PcStatus::Rollbacking); //更新子单元事务状态为正在回滚
 
@@ -942,7 +942,7 @@ impl<
                         //当前事务的子事务是事务树
                         let mgr_copy = mgr.clone();
 
-                        if let Err(e) = map_reduce.map(AsyncRuntime::Multi(mgr.0.rt.clone()), async move {
+                        if let Err(e) = map_reduce.map(mgr.0.rt.clone(), async move {
                             //执行子事务树的回滚
                             let child_uid = child.get_transaction_uid();
                             let prepare_uid = child.get_prepare_uid();
