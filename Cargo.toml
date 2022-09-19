@@ -1,6 +1,6 @@
 [package]
 name = "pi_async_transaction"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["vmos <vmos@fairblock.io>"]
 edition = "2018"
 description = "Asynchronous abstraction for transactions"
@@ -13,7 +13,7 @@ futures = "0.3"
 bytes = "1.0"
 dashmap = "4.0"
 log = "0.4"
-pi_async = "0.2"
+pi_async = "0.5"
 pi_guid = "0.1"
 pi_atom = "0.1"
 

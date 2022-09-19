@@ -81,10 +81,10 @@ pub trait Transaction2Pc: AsyncTransaction + Clone {
         Result<<Self as Transaction2Pc>::ConfirmOutput, <Self as Transaction2Pc>::ConfirmError>
     ) -> Result<(), <Self as Transaction2Pc>::ConfirmError> + Clone + Send + Sync + 'static;
 
-    /// 是否需要持久化
+    /// 事务是否需要持久化
     fn is_require_persistence(&self) -> bool;
 
-    /// 设置需要持久化
+    /// 设置事务需要持久化
     fn require_persistence(&self);
 
     /// 是否并发预提交
