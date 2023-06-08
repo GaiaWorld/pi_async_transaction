@@ -10,6 +10,7 @@ use futures::future::{FutureExt, BoxFuture};
 use pi_async::rt::{AsyncRuntime, multi_thread::MultiTaskRuntime};
 use pi_guid::{GuidGen, Guid};
 use pi_atom::Atom;
+use log::warn;
 
 use super::{ErrorLevel,
             TransactionError,
@@ -227,6 +228,8 @@ impl<
             || status == Transaction2PcStatus::CommitFailed
             || status == Transaction2PcStatus::RollbackFailed {
             //事务正在执行中，或事务出现严重错误，则不允许完成事务，并保持事务当前状态
+            warn!("Finish transaction failed, status: {:?}, reason: invalid status",
+                status);
             return;
         }
 
@@ -256,6 +259,7 @@ impl<
         let current_tr_status = tr.get_status();
         if current_tr_status != Transaction2PcStatus::Start {
             //事务未开始，则不允许初始化
+            warn!("Start root transaction failed, status: {:?}, reason: invalid transaction status", current_tr_status);
             tr.set_status(Transaction2PcStatus::InitFailed); //更新事务状态为初始化失败
             return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Normal, format!("Init root failed, type: unit, status: {:?}, reason: invalid transaction status", current_tr_status)));
         }
@@ -263,6 +267,7 @@ impl<
         tr.set_transaction_uid(alloc_transaction_uid(&self.0.uid_gen, &tr)); //设置根事务的唯一id
         if let Err(current_len) = register_transcation(&self, &tr) {
             //注册根事务失败，指定事务所在事务源的同时处理事务数已达限制
+            warn!("Start root transaction failed, status: {:?}, reason: {:?}", tr.get_status(), current_len);
             tr.set_status(Transaction2PcStatus::InitFailed); //更新事务状态为初始化失败
             return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Normal, format!("Init root failed, type: unit, current: {}, status: {:?}, reason: same source transaction excessive", current_len, tr.get_status())));
         }
@@ -304,6 +309,7 @@ impl<
 
                     if let Err(e) = child.init().await {
                         //子事务初始化失败
+                        warn!("Start child transaction failed, type: unit, status: {:?}, reason: {:?}", child.get_status(), e);
                         child.set_status(Transaction2PcStatus::InitFailed); //更新子单元事务状态为初始化失败
                         return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Normal, format!("Init children failed, type: unit, reason: {:?}", e)));
                     }
@@ -313,10 +319,12 @@ impl<
                     //当前事务的子事务是事务树，则初始化子事务树
                     if let Err(e) = mgr.start(child).await {
                         //子事务初始化失败
+                        warn!("Start child transaction failed, type: tree, status: {:?}, reason: {:?}", tr.get_status(), e);
                         return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Normal, format!("Init children failed, type: tree, reason: {:?}", e)));
                     }
                 } else {
                     //当前事务的子事务是无效的事务
+                    warn!("Start child transaction failed, type: invalid, status: {:?}, reason: invalid transaction type", child.get_status());
                     child.set_status(Transaction2PcStatus::InitFailed); //更新子事务状态为初始化失败
                     return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Normal, "Init transaction failed, reason: invalid transaction type"));
                 }
@@ -326,6 +334,7 @@ impl<
             match tr.init().await {
                 Err(e) => {
                     //根事务初始化失败
+                    warn!("Start root transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                     Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Normal, format!("Init root failed, type: tree, reason: {:?}", e)))
                 },
                 Ok(output) => {
@@ -346,6 +355,7 @@ impl<
             && current_tr_status != Transaction2PcStatus::Actioned
             && current_tr_status != Transaction2PcStatus::Rollbacked {
             //事务未初始化、完成操作或未回滚成功，则不允许预提交
+            warn!("Prepare root transaction failed, status: {:?}, reason: invalid transaction status", current_tr_status);
             tr.set_status(Transaction2PcStatus::PrepareFailed); //更新事务状态为预提交失败
             return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Prepare root failed, type: unit, transaction_uid: {:?}, prepare_uid: {:?}, status: {:?}, reason: invalid transaction status", tr.get_transaction_uid(), tr.get_prepare_uid(), current_tr_status)));
         }
@@ -416,6 +426,7 @@ impl<
                             match child_copy.prepare().await {
                                 Err(e) => {
                                     //子事务预提交失败
+                                    warn!("Prepare child transaction failed, type: unit, status: {:?}, reason: {:?}", child_copy.get_status(), e);
                                     child_copy.set_status(Transaction2PcStatus::PrepareFailed); //更新子单元事务状态为预提交失败
                                     Err(Error::new(ErrorKind::Other, format!("Prepare children failed, type: unit, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}", child_copy.get_transaction_uid(), child_copy.get_prepare_uid(), e)))
                                 },
@@ -427,6 +438,7 @@ impl<
                             }
                         }) {
                             //映射子事务的预提交操作失败
+                            warn!("Prepare child transaction failed, type: unit, status: {:?}, reason: {:?}", child.get_status(), e);
                             child.set_status(Transaction2PcStatus::PrepareFailed); //更新子单元事务状态为预提交失败
                             return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Map children prepare failed, type: unit, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}", child_uid, prepare_uid, e)));
                         };
@@ -442,6 +454,7 @@ impl<
                             match mgr_copy.prepare(child).await {
                                 Err(e) => {
                                     //子事务预提交失败
+                                    warn!("Prepare child transaction failed, type: tree, uid: {:?}, reason: {:?}", (&child_uid, &prepare_uid), e);
                                     Err(Error::new(ErrorKind::Other, format!("Prepare children failed, type: tree, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}", child_uid, prepare_uid, e)))
                                 },
                                 Ok(output) => {
@@ -451,10 +464,12 @@ impl<
                             }
                         }) {
                             //映射子事务的预提交操作失败
+                            warn!("Prepare child transaction failed, type: tree, status: {:?}, reason: {:?}", tr.get_status(), e);
                             return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Map children prepare failed, type: tree, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}", child_uid, prepare_uid, e)));
                         };
                     } else {
                         //当前事务的子事务是无效的事务
+                        warn!("Prepare child transaction failed, type: invalid, status: {:?}, reason: invalid transaction type", tr.get_status());
                         child.set_status(Transaction2PcStatus::PrepareFailed); //更新子事务状态为预提交失败
                         return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Prepare transaction failed, child_uid: {:?}, prepare_uid: {:?}, reason: invalid transaction type", child_uid, prepare_uid)));
                     }
@@ -464,6 +479,7 @@ impl<
                 match map_reduce.reduce(true).await {
                     Err(e) => {
                         //归并子事务的预提交操作失败
+                        warn!("Prepare child transaction failed,status: {:?}, reason: {:?}", tr.get_status(), e);
                         Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Reduce children prepare failed, type: tree, transaction_uid: {:?}, prepare_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_prepare_uid(), e)))
                     },
                     Ok(results) => {
@@ -493,6 +509,7 @@ impl<
                         match tr.prepare().await {
                             Err(e) => {
                                 //根事务提交失败
+                                warn!("Prepare root transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                                 Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Prepare root failed, type: tree, transaction_uid: {:?}, prepare_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_prepare_uid(), e)))
                             },
                             Ok(output) => {
@@ -530,6 +547,7 @@ impl<
                         match child.prepare().await {
                             Err(e) => {
                                 //子事务预提交失败
+                                warn!("Prepare child transaction failed, type: unit, status: {:?}, reason: {:?}", child.get_status(), e);
                                 child.set_status(Transaction2PcStatus::PrepareFailed); //更新子单元事务状态为预提交失败
                                 return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Prepare children failed, type: unit, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}", child.get_transaction_uid(), child.get_prepare_uid(), e)));
                             },
@@ -555,6 +573,7 @@ impl<
                         match mgr.prepare(child).await {
                             Err(e) => {
                                 //子事务预提交失败
+                                warn!("Prepare child transaction failed, type: tree, status: {:?}, reason: {:?}", tr.get_status(), e);
                                 return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Prepare children failed, type: tree, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}", child_uid, prepare_uid, e)));
                             },
                             Ok(child_output) => {
@@ -571,6 +590,7 @@ impl<
                         }
                     } else {
                         //当前事务的子事务是无效的事务
+                        warn!("Prepare child transaction failed, type: invalid, status: {:?}, reason: invalid transaction type", child.get_status());
                         child.set_status(Transaction2PcStatus::PrepareFailed); //更新子事务状态为预提交失败
                         return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Prepare transaction failed, child_uid: {:?}, prepare_uid: {:?}, reason: invalid transaction type", child.get_transaction_uid(), child.get_prepare_uid())));
                     }
@@ -580,6 +600,7 @@ impl<
                 match tr.prepare().await {
                     Err(e) => {
                         //根事务提交失败
+                        warn!("Prepare root transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                         Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Prepare root failed, type: tree, transaction_uid: {:?}, prepare_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_prepare_uid(), e)))
                     },
                     Ok(output) => {
@@ -613,6 +634,7 @@ impl<
         let current_tr_status = tr.get_status();
         if current_tr_status != Transaction2PcStatus::Prepared {
             //事务未完成预提交，则不允许提交日志
+            warn!("Commmit root transaction failed, status: {:?}, reason: invalid transaction status", current_tr_status);
             tr.set_status(Transaction2PcStatus::LogCommitFailed); //更新事务状态为提交日志失败
             return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Normal, format!("Commit root failed, type: unit, transaction_uid: {:?}, commit_uid: {:?}, status: {:?}, reason: invalid transaction status", tr.get_transaction_uid(), tr.get_commit_uid(), current_tr_status)));
         }
@@ -632,6 +654,7 @@ impl<
                                               input).await {
                 Err(e) => {
                     //同步追加提交日志失败
+                    warn!("Commmit root transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                     tr.set_status(Transaction2PcStatus::LogCommitFailed); //更新事务状态为提交日志失败
                     return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Normal, format!("Commit transaction failed, type: tree, transaction_uid: {:?}, commit_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_commit_uid(), e)));
                 },
@@ -639,6 +662,7 @@ impl<
                     //同步追加提交日志成功，则立即异步刷新提交日志
                     if let Err(e) = self.0.commit_logger.flush(log_handle).await {
                         //异步刷新提交日志失败
+                        warn!("Commmit root transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                         tr.set_status(Transaction2PcStatus::LogCommitFailed); //更新事务状态为提交日志失败
                         return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Normal, format!("Commit transaction failed, type: tree, transaction_uid: {:?}, commit_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_commit_uid(), e)));
                     }
@@ -658,6 +682,7 @@ impl<
         let current_tr_status = tr.get_status();
         if current_tr_status != Transaction2PcStatus::LogCommited {
             //事务未完成提交日志，则不允许提交
+            warn!("Commmit root transaction failed, status: {:?}, reason: invalid transaction type", tr.get_status());
             tr.set_status(Transaction2PcStatus::CommitFailed); //更新事务状态为提交失败
             return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Normal, format!("Commit root failed, type: unit, transaction_uid: {:?}, commit_uid: {:?}, status: {:?}, reason: invalid transaction status", tr.get_transaction_uid(), tr.get_commit_uid(), current_tr_status)));
         }
@@ -688,6 +713,7 @@ impl<
             let current_tr_status = tr.get_status();
             if current_tr_status != Transaction2PcStatus::LogCommited {
                 //事务未完成提交日志，则不允许提交
+                warn!("Confirm root transaction failed, status: {:?}, reason: invalid transaction status", current_tr_status);
                 tr.set_status(Transaction2PcStatus::CommitFailed); //更新事务状态为提交失败
                 return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Normal, format!("Commit root failed, type: unit, transaction_uid: {:?}, commit_uid: {:?}, status: {:?}, reason: invalid transaction status", tr.get_transaction_uid(), tr.get_commit_uid(), current_tr_status)));
             }
@@ -721,6 +747,7 @@ impl<
                             match child_copy.commit(confirm_copy).await {
                                 Err(e) => {
                                     //子事务延迟提交失败
+                                    warn!("Confirm child transaction failed, type: unit, status: {:?}, reason: {:?}", child_copy.get_status(), e);
                                     child_copy.set_status(Transaction2PcStatus::Commiting); //更新子单元事务状态为提交失败
                                     Err(Error::new(ErrorKind::Other, format!("Commit children failed, type: unit, child_uid: {:?}, commit_uid: {:?}, reason: {:?}", child_copy.get_transaction_uid(), child_copy.get_commit_uid(), e)))
                                 },
@@ -732,6 +759,7 @@ impl<
                             }
                         }) {
                             //映射子事务的延迟提交操作失败
+                            warn!("Confirm child transaction failed, type: unit, status: {:?}, reason: {:?}", tr.get_status(), e);
                             child.set_status(Transaction2PcStatus::CommitFailed); //更新子单元事务状态为提交失败
                             return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Map children commit failed, type: unit, child_uid: {:?}, commit_uid: {:?}, reason: {:?}", child_uid, commit_uid, e)));
                         };
@@ -750,6 +778,7 @@ impl<
                             match mgr_copy.commit_confirm(child, confirm_copy).await {
                                 Err(e) => {
                                     //子事务延迟提交失败
+                                    warn!("Confirm child transaction failed, type: tree, status: {:?}, reason: {:?}", child_copy.get_status(), e);
                                     child_copy.set_status(Transaction2PcStatus::CommitFailed); //更新子事务树状态为提交失败
                                     Err(Error::new(ErrorKind::Other, format!("Commit children failed, type: tree, child_uid: {:?}, commit_uid: {:?}, reason: {:?}", child_uid, commit_uid, e)))
                                 },
@@ -761,10 +790,12 @@ impl<
                             }
                         }) {
                             //映射子事务的延迟提交操作失败
+                            warn!("Confirm child transaction failed, type: tree, status: {:?}, reason: {:?}", tr.get_status(), e);
                             return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Map children commit failed, type: tree, child_uid: {:?}, commit_uid: {:?}, reason: {:?}", child_uid, commit_uid, e)));
                         };
                     } else {
                         //当前事务的子事务是无效的事务
+                        warn!("Confirm child transaction failed, type: invalid, status: {:?}, reason: invalid transaction type", child.get_status());
                         child.set_status(Transaction2PcStatus::CommitFailed); //更新子事务状态为提交失败
                         return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Commit transaction failed, child_uid: {:?}, commit_uid: {:?}, reason: invalid transaction type", child_uid, commit_uid)));
                     }
@@ -774,6 +805,7 @@ impl<
                 match map_reduce.reduce(true).await {
                     Err(e) => {
                         //归并子事务的延迟提交操作失败
+                        warn!("Confirm child transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                         Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Reduce children commit failed, type: tree, child_uid: {:?}, commit_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_commit_uid(), e)))
                     },
                     Ok(results) => {
@@ -781,6 +813,7 @@ impl<
                         for result in results {
                             if let Err(e) = result {
                                 //子事务延迟提交失败
+                                warn!("Confirm child transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                                 return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Commit children failed, type: tree, child_uid: {:?}, commit_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_commit_uid(), e)));
                             }
                         }
@@ -789,6 +822,7 @@ impl<
                         match tr.commit(confirm).await {
                             Err(e) => {
                                 //根事务延迟提交失败
+                                warn!("Confirm root transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                                 Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Commit root failed, type: tree, transaction_uid: {:?}, commit_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_commit_uid(), e)))
                             },
                             Ok(output) => {
@@ -809,6 +843,7 @@ impl<
 
                         if let Err(e) = child.commit(confirm.clone()).await {
                             //子事务延迟提交失败
+                            warn!("Confirm child transaction failed, type: unit, status: {:?}, reason: {:?}", child.get_status(), e);
                             child.set_status(Transaction2PcStatus::CommitFailed); //更新子单元事务状态为提交失败
                             return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Commit children failed, type: unit, child_uid: {:?}, commit_uid: {:?}, reason: {:?}", child.get_transaction_uid(), child.get_commit_uid(), e)));
                         }
@@ -822,6 +857,7 @@ impl<
 
                         if let Err(e) = mgr.commit_confirm(child.clone(), confirm.clone()).await {
                             //子事务延迟提交失败
+                            warn!("Confirm child transaction failed, type: tree, status: {:?}, reason: {:?}", child.get_status(), e);
                             child.set_status(Transaction2PcStatus::CommitFailed); //更新子事务树状态为提交失败
                             return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Commit children failed, type: tree, child_uid: {:?}, commit_uid: {:?}, reason: {:?}", child_uid, commit_uid, e)));
                         }
@@ -829,6 +865,7 @@ impl<
                         child.set_status(Transaction2PcStatus::Commited); //更新子事务树状态为已提交
                     } else {
                         //当前事务的子事务是无效的事务
+                        warn!("Confirm child transaction failed, type: invalid, status: {:?}, reason: invalid transaction type", child.get_status());
                         child.set_status(Transaction2PcStatus::CommitFailed); //更新子事务状态为提交失败
                         return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Commit transaction failed, child_uid: {:?}, commit_uid: {:?}, reason: invalid transaction type", child.get_transaction_uid(), child.get_commit_uid())));
                     }
@@ -838,6 +875,7 @@ impl<
                 match tr.commit(confirm).await {
                     Err(e) => {
                         //根事务延迟提交失败
+                        warn!("Confirm root transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                         Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Commit root failed, type: tree, transaction_uid: {:?}, commit_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_commit_uid(), e)))
                     },
                     Ok(output) => {
@@ -859,6 +897,7 @@ impl<
             && current_tr_status != Transaction2PcStatus::PrepareFailed
             && current_tr_status != Transaction2PcStatus::LogCommitFailed {
             //事务不是操作失败，预提交失败和提交日志失败，则不允许回滚
+            warn!("Rollback root transaction failed, status: {:?}, reason: invalid transaction", current_tr_status);
             tr.set_status(Transaction2PcStatus::RollbackFailed); //更新事务状态为回滚失败
             return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Normal, format!("Rollback root failed, type: unit, transaction_uid: {:?}, commit_uid: {:?}, status: {:?}, reason: invalid transaction status", tr.get_transaction_uid(), tr.get_commit_uid(), current_tr_status)));
         }
@@ -924,6 +963,7 @@ impl<
                             match child_copy.rollback().await {
                                 Err(e) => {
                                     //子事务回滚失败
+                                    warn!("Rollback child transaction failed, type: unit, status: {:?}, reason: {:?}", child_copy.get_status(), e);
                                     child_copy.set_status(Transaction2PcStatus::RollbackFailed); //更新子单元事务状态为回滚失败
                                     Err(Error::new(ErrorKind::Other, format!("Rollback children failed, type: unit, child_uid: {:?}, prepare_uid: {:?}, commit_uid: {:?}, reason: {:?}", child_copy.get_transaction_uid(), child_copy.get_prepare_uid(), child_copy.get_commit_uid(), e)))
                                 },
@@ -935,6 +975,7 @@ impl<
                             }
                         }) {
                             //映射子事务的回滚操作失败
+                            warn!("Rollback child transaction failed, type: tree, status: {:?}, reason: {:?}", child.get_status(), e);
                             child.set_status(Transaction2PcStatus::RollbackFailed); //更新子单元事务状态为回滚失败
                             return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Map children rollback failed, type: unit, child_uid: {:?}, prepare_uid: {:?}, commit_uid: {:?}, reason: {:?}", child_uid, prepare_uid, commit_uid, e)));
                         };
@@ -951,6 +992,7 @@ impl<
                             match mgr_copy.rollback(child).await {
                                 Err(e) => {
                                     //子事务回滚失败
+                                    warn!("Rollback child transaction failed, type: tree, uid: {:?}, reason: {:?}", (&child_uid, &prepare_uid, &commit_uid), e);
                                     Err(Error::new(ErrorKind::Other, format!("Rollback children failed, type: tree, child_uid: {:?}, prepare_uid: {:?}, commit_uid: {:?}, reason: {:?}", child_uid, prepare_uid, commit_uid, e)))
                                 },
                                 Ok(output) => {
@@ -960,10 +1002,12 @@ impl<
                             }
                         }) {
                             //映射子事务的回滚操作失败
+                            warn!("Rollback child transaction failed, type: tree, status: {:?}, reason: {:?}", tr.get_status(), e);
                             return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Map children rollback failed, type: tree, child_uid: {:?}, prepare_uid: {:?}, commit_uid: {:?}, reason: {:?}", child_uid, prepare_uid, commit_uid, e)));
                         };
                     } else {
                         //当前事务的子事务是无效的事务
+                        warn!("Rollback child transaction failed, type: invalid, status: {:?}, reason: invalid transaction type", child.get_status());
                         child.set_status(Transaction2PcStatus::RollbackFailed); //更新子事务状态为回滚失败
                         return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Rollback transaction failed, child_uid: {:?}, prepare_uid: {:?}, commit_uid: {:?}, reason: invalid transaction type", child_uid, prepare_uid, commit_uid)));
                     }
@@ -973,6 +1017,7 @@ impl<
                 match map_reduce.reduce(true).await {
                     Err(e) => {
                         //归并子事务的回滚操作失败
+                        warn!("Rollback child transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                         Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Reduce children rollback failed, type: tree, child_uid: {:?}, prepare_uid: {:?}, commit_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_prepare_uid(), tr.get_commit_uid(), e)))
                     },
                     Ok(results) => {
@@ -980,6 +1025,7 @@ impl<
                         for result in results {
                             if let Err(e) = result {
                                 //子事务回滚失败
+                                warn!("Rollback child transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                                 return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Rollback children failed, type: tree, child_uid: {:?}, prepare_uid: {:?}, commit_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_prepare_uid(), tr.get_commit_uid(), e)));
                             }
                         }
@@ -988,6 +1034,7 @@ impl<
                         match tr.rollback().await {
                             Err(e) => {
                                 //根事务回滚失败
+                                warn!("Rollback root transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                                 Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Rollback root failed, type: tree, transaction_uid: {:?}, prepare_uid: {:?}, commit_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_prepare_uid(), tr.get_commit_uid(), e)))
                             },
                             Ok(output) => {
@@ -1008,6 +1055,7 @@ impl<
 
                         if let Err(e) = child.rollback().await {
                             //子事务回滚失败
+                            warn!("Rollback child transaction failed, type: unit, status: {:?}, reason: {:?}", child.get_status(), e);
                             child.set_status(Transaction2PcStatus::RollbackFailed); //更新子单元事务状态为回滚失败
                             return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Rollback children failed, type: unit, child_uid: {:?}, prepare_uid: {:?}, commit_uid: {:?}, reason: {:?}", child.get_transaction_uid(), child.get_prepare_uid(), child.get_commit_uid(), e)));
                         }
@@ -1021,10 +1069,12 @@ impl<
 
                         if let Err(e) = mgr.rollback(child).await {
                             //子事务回滚失败
+                            warn!("Rollback child transaction failed, type: tree, uid: {:?}, reason: {:?}", (&child_uid, &prepare_uid, &commit_uid), e);
                             return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Rollback children failed, type: tree, child_uid: {:?}, prepare_uid: {:?}, commit_uid: {:?}, reason: {:?}", child_uid, prepare_uid, commit_uid, e)));
                         }
                     } else {
                         //当前事务的子事务是无效的事务
+                        warn!("Rollback child transaction failed, type invalid, status: {:?}, reason: invalid transaction type", child.get_status());
                         child.set_status(Transaction2PcStatus::CommitFailed); //更新子事务状态为回滚失败
                         return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Rollback transaction failed, child_uid: {:?}, prepare_uid: {:?}, commit_uid: {:?}, reason: invalid transaction type", child.get_transaction_uid(), child.get_prepare_uid(), child.get_commit_uid())));
                     }
@@ -1034,6 +1084,7 @@ impl<
                 match tr.rollback().await {
                     Err(e) => {
                         //根事务回滚失败
+                        warn!("Rollback root transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                         Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Fatal, format!("Rollback root failed, type: tree, transaction_uid: {:?}, prepare_uid: {:?}, commit_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_prepare_uid(), tr.get_commit_uid(), e)))
                     },
                     Ok(output) => {
