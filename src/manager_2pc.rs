@@ -427,7 +427,7 @@ impl<
                             match child_copy.prepare().await {
                                 Err(e) => {
                                     //子事务预提交失败
-                                    warn!("Prepare child transaction failed, type: unit, status: {:?}, reason: {:?}", child_copy.get_status(), e);
+                                    debug!("Prepare child transaction failed, type: unit, status: {:?}, reason: {:?}", child_copy.get_status(), e);
                                     child_copy.set_status(Transaction2PcStatus::PrepareFailed); //更新子单元事务状态为预提交失败
                                     Err(Error::new(ErrorKind::Other, format!("Prepare children failed, type: unit, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}", child_copy.get_transaction_uid(), child_copy.get_prepare_uid(), e)))
                                 },
@@ -439,7 +439,7 @@ impl<
                             }
                         }) {
                             //映射子事务的预提交操作失败
-                            warn!("Prepare child transaction failed, type: unit, status: {:?}, reason: {:?}", child.get_status(), e);
+                            debug!("Prepare child transaction failed, type: unit, status: {:?}, reason: {:?}", child.get_status(), e);
                             child.set_status(Transaction2PcStatus::PrepareFailed); //更新子单元事务状态为预提交失败
                             return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Map children prepare failed, type: unit, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}", child_uid, prepare_uid, e)));
                         };
@@ -455,7 +455,7 @@ impl<
                             match mgr_copy.prepare(child).await {
                                 Err(e) => {
                                     //子事务预提交失败
-                                    warn!("Prepare child transaction failed, type: tree, uid: {:?}, reason: {:?}", (&child_uid, &prepare_uid), e);
+                                    debug!("Prepare child transaction failed, type: tree, uid: {:?}, reason: {:?}", (&child_uid, &prepare_uid), e);
                                     Err(Error::new(ErrorKind::Other, format!("Prepare children failed, type: tree, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}", child_uid, prepare_uid, e)))
                                 },
                                 Ok(output) => {
@@ -465,7 +465,7 @@ impl<
                             }
                         }) {
                             //映射子事务的预提交操作失败
-                            warn!("Prepare child transaction failed, type: tree, status: {:?}, reason: {:?}", tr.get_status(), e);
+                            debug!("Prepare child transaction failed, type: tree, status: {:?}, reason: {:?}", tr.get_status(), e);
                             return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Map children prepare failed, type: tree, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}", child_uid, prepare_uid, e)));
                         };
                     } else {
@@ -480,7 +480,7 @@ impl<
                 match map_reduce.reduce(true).await {
                     Err(e) => {
                         //归并子事务的预提交操作失败
-                        warn!("Prepare child transaction failed,status: {:?}, reason: {:?}", tr.get_status(), e);
+                        debug!("Prepare child transaction failed,status: {:?}, reason: {:?}", tr.get_status(), e);
                         Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Reduce children prepare failed, type: tree, transaction_uid: {:?}, prepare_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_prepare_uid(), e)))
                     },
                     Ok(results) => {
@@ -510,7 +510,7 @@ impl<
                         match tr.prepare().await {
                             Err(e) => {
                                 //根事务提交失败
-                                warn!("Prepare root transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
+                                debug!("Prepare root transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                                 Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Prepare root failed, type: tree, transaction_uid: {:?}, prepare_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_prepare_uid(), e)))
                             },
                             Ok(output) => {
@@ -548,7 +548,7 @@ impl<
                         match child.prepare().await {
                             Err(e) => {
                                 //子事务预提交失败
-                                warn!("Prepare child transaction failed, type: unit, status: {:?}, reason: {:?}", child.get_status(), e);
+                                debug!("Prepare child transaction failed, type: unit, status: {:?}, reason: {:?}", child.get_status(), e);
                                 child.set_status(Transaction2PcStatus::PrepareFailed); //更新子单元事务状态为预提交失败
                                 return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Prepare children failed, type: unit, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}", child.get_transaction_uid(), child.get_prepare_uid(), e)));
                             },
@@ -574,7 +574,7 @@ impl<
                         match mgr.prepare(child).await {
                             Err(e) => {
                                 //子事务预提交失败
-                                warn!("Prepare child transaction failed, type: tree, status: {:?}, reason: {:?}", tr.get_status(), e);
+                                debug!("Prepare child transaction failed, type: tree, status: {:?}, reason: {:?}", tr.get_status(), e);
                                 return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Prepare children failed, type: tree, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}", child_uid, prepare_uid, e)));
                             },
                             Ok(child_output) => {
@@ -591,7 +591,7 @@ impl<
                         }
                     } else {
                         //当前事务的子事务是无效的事务
-                        warn!("Prepare child transaction failed, type: invalid, status: {:?}, reason: invalid transaction type", child.get_status());
+                        debug!("Prepare child transaction failed, type: invalid, status: {:?}, reason: invalid transaction type", child.get_status());
                         child.set_status(Transaction2PcStatus::PrepareFailed); //更新子事务状态为预提交失败
                         return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Prepare transaction failed, child_uid: {:?}, prepare_uid: {:?}, reason: invalid transaction type", child.get_transaction_uid(), child.get_prepare_uid())));
                     }
@@ -601,7 +601,7 @@ impl<
                 match tr.prepare().await {
                     Err(e) => {
                         //根事务提交失败
-                        warn!("Prepare root transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
+                        debug!("Prepare root transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                         Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, format!("Prepare root failed, type: tree, transaction_uid: {:?}, prepare_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_prepare_uid(), e)))
                     },
                     Ok(output) => {
