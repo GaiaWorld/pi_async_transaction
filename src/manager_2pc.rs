@@ -10,7 +10,7 @@ use futures::future::{FutureExt, BoxFuture};
 use pi_async_rt::rt::{AsyncRuntime,
                       multi_thread::MultiTaskRuntime};
 use pi_guid::{GuidGen, Guid};
-use log::warn;
+use log::{debug, warn};
 use pi_atom::Atom;
 
 use super::{ErrorLevel,
