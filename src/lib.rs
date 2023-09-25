@@ -226,7 +226,7 @@ pub trait AsyncCommitLog: Clone + Send + Sync + 'static {
     fn finish_replay(&self) -> BoxFuture<IOResult<()>>;
 
     /// 分裂出一个新的提交日志
-    fn split(&self) -> BoxFuture<IOResult<()>>;
+    fn split(&self) -> BoxFuture<IOResult<usize>>;
 }
 
 
