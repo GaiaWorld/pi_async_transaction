@@ -198,35 +198,35 @@ pub trait AsyncCommitLog: Clone + Send + Sync + 'static {
     type Cid: Debug + Clone + Send + PartialEq + Eq + 'static;
 
     /// 异步追加提交日志，返回日志编号
-    fn append<B>(&self, commit_uid: Self::Cid, log: B) -> BoxFuture<IOResult<Self::C>>
+    fn append<B>(&self, commit_uid: Self::Cid, log: B) -> BoxFuture<'static, IOResult<Self::C>>
         where B: BufMut + AsRef<[u8]> + Send + Sized + 'static;
 
     /// 异步刷新提交日志
-    fn flush(&self, log_handle: Self::C) -> BoxFuture<IOResult<()>>;
+    fn flush(&self, log_handle: Self::C) -> BoxFuture<'static, IOResult<()>>;
 
     /// 异步确认提交日志
-    fn confirm(&self, commit_uid: Self::Cid) -> BoxFuture<IOResult<()>>;
+    fn confirm(&self, commit_uid: Self::Cid) -> BoxFuture<'static, IOResult<()>>;
 
     /// 开始重播提交日志，返回重播的日志数量和字节数量
-    fn start_replay<B, F>(&self, callback: Arc<F>) -> BoxFuture<IOResult<(usize, usize)>>
+    fn start_replay<B, F>(&self, callback: Arc<F>) -> BoxFuture<'static, IOResult<(usize, usize)>>
         where B: BufMut + AsRef<[u8]> + From<Vec<u8>> + Send + Sized + 'static,
               F: Fn(Self::Cid, B) -> IOResult<()> + Send + Sync + 'static;
 
     /// 异步追加重播的提交日志
-    fn append_replay<B>(&self, commit_uid: Self::Cid, log: B) -> BoxFuture<IOResult<Self::C>>
+    fn append_replay<B>(&self, commit_uid: Self::Cid, log: B) -> BoxFuture<'static, IOResult<Self::C>>
         where B: BufMut + AsRef<[u8]> + Send + Sized + 'static;
 
     /// 异步刷新重播的提交日志
-    fn flush_replay(&self, log_handle: Self::C) -> BoxFuture<IOResult<()>>;
+    fn flush_replay(&self, log_handle: Self::C) -> BoxFuture<'static, IOResult<()>>;
 
     /// 异步确认重播的提交日志
-    fn confirm_replay(&self, commit_uid: Self::Cid) -> BoxFuture<IOResult<()>>;
+    fn confirm_replay(&self, commit_uid: Self::Cid) -> BoxFuture<'static, IOResult<()>>;
 
     /// 完成提交日志的重播
-    fn finish_replay(&self) -> BoxFuture<IOResult<()>>;
+    fn finish_replay(&self) -> BoxFuture<'static, IOResult<()>>;
 
     /// 追加一个新的检查点
-    fn append_check_point(&self) -> BoxFuture<IOResult<usize>>;
+    fn append_check_point(&self) -> BoxFuture<'static, IOResult<usize>>;
 }
 
 
