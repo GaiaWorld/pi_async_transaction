@@ -1,6 +1,6 @@
 [package]
 name = "pi_async_transaction"
-version = "0.5.0"
+version = "0.6.0"
 authors = ["vmos <vmos@fairblock.io>"]
 edition = "2018"
 description = "Asynchronous abstraction for transactions"
@@ -10,17 +10,17 @@ keywords = ["pi", "async", "transaction"]
 
 [dependencies]
 futures = "0.3"
-bytes = "1.4"
+bytes = "1.5"
 dashmap = "5.5"
 log = "0.4"
 pi-async-rt = "0.1"
 pi_guid = "0.1"
-pi_atom = "0.2"
+pi_atom = "0.3"
 
 [dev-dependencies]
 parking_lot = "0.12"
 async-stream = "0.3"
-pi_async_file = "0.5"
+pi_async_file = "0.6"
 pi_hash = "0.1"
 pi_ordmap = "0.2"
 pi_time = "0.3"
