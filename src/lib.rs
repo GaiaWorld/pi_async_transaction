@@ -234,14 +234,14 @@ pub trait AsyncCommitLog: Clone + Send + Sync + 'static {
     /// 追加一个新的检查点
     fn append_check_point(&self) -> BoxFuture<'static, IOResult<usize>>;
 
-    /// 追加提交日志的总数量
-    fn append_total_count(&self) -> BoxFuture<'static, usize>;
-
     /// 等待确认提交的事务数量
     fn waiting_confirm_count(&self) -> BoxFuture<'static, usize>;
 
+    /// 追加提交日志的总数量
+    fn append_total_count(&self) -> usize;
+
     /// 确认提交的日志总数量
-    fn confirm_total_count(&self) -> BoxFuture<'static, usize>;
+    fn confirm_total_count(&self) -> usize;
 }
 
 
