@@ -225,11 +225,17 @@ pub trait AsyncCommitLog: Clone + Send + Sync + 'static {
     /// 完成提交日志的重播
     fn finish_replay(&self) -> BoxFuture<'static, IOResult<()>>;
 
+    /// 获取指定提交日志唯一ID在哪个检查点上
+    fn check_point_of(&self, commit_uid: Self::Cid) -> BoxFuture<'static, Option<usize>>;
+
     /// 获取当前检查点
     fn current_check_point(&self) -> BoxFuture<'static, usize>;
 
     /// 追加一个新的检查点
     fn append_check_point(&self) -> BoxFuture<'static, IOResult<usize>>;
+
+    /// 等待确认提交的事务数量
+    fn waiting_confirm_count(&self) -> BoxFuture<'static, u64>;
 }
 
 
