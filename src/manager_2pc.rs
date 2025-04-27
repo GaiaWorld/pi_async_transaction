@@ -624,6 +624,351 @@ impl<
         }.boxed()
     }
 
+    /// 异步预提交，成功返回需要写入提交日志的数据，失败返回预提交冲突的首个表名和关键字
+    pub async fn prepare_conflicts<T>(&self, tr: T)
+        -> Result<Option<<T as Transaction2Pc>::PrepareOutput>, <T as Transaction2Pc>::PrepareError>
+        where T: TransactionTree<Tid = Guid, Pid = Guid, Cid = Guid, Node = T, Status = Transaction2PcStatus>
+    {
+        let current_tr_status = tr.get_status();
+        if current_tr_status != Transaction2PcStatus::Inited
+            && current_tr_status != Transaction2PcStatus::Actioned
+            && current_tr_status != Transaction2PcStatus::Rollbacked {
+            //事务未初始化、完成操作或未回滚成功，则不允许预提交
+            warn!("Prepare root transaction conflicts failed, status: {:?}, reason: invalid transaction status",
+                current_tr_status);
+            tr.set_status(Transaction2PcStatus::PrepareFailed); //更新事务状态为预提交失败
+            return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal,
+                                                                                  format!("Prepare root conflicts failed, type: unit, transaction_uid: {:?}, prepare_uid: {:?}, status: {:?}, reason: invalid transaction status",
+                                                                                          tr.get_transaction_uid(),
+                                                                                          tr.get_prepare_uid(),
+                                                                                          current_tr_status)));
+        }
+
+        if !tr.is_writable() {
+            //只读事务不需要预提交，则立即返回预提交成功
+            tr.set_status(Transaction2PcStatus::Prepared); //更新事务状态为已预提交
+            return Ok(None);
+        }
+
+        self.0.prepare_produced.fetch_add(1, Ordering::Relaxed); //增加开始预提交数量
+        tr.set_status(Transaction2PcStatus::Prepareing); //更新事务状态为正在预提交
+
+        let result = if tr.is_unit() {
+            //预提交单元事务
+            tr.prepare_conflicts().await
+        } else {
+            //预提交事务树
+            self.prepare_childrens_conflicts(tr.clone()).await
+        };
+
+        if result.is_err() {
+            //预提交事务失败
+            tr.set_status(Transaction2PcStatus::PrepareFailed); //更新事务状态为预提交失败
+        } else {
+            //预提交事务成功
+            tr.set_status(Transaction2PcStatus::Prepared); //更新事务状态为已预提交
+        }
+        self.0.prepare_consumed.fetch_add(1, Ordering::Relaxed); //增加结束预提交数量
+
+        result
+    }
+
+    // 可写子事务的异步预提交，失败返回预提交冲突的首个表名和关键字
+    fn prepare_childrens_conflicts<T>(&self, tr: T)
+        -> BoxFuture<Result<Option<<T as Transaction2Pc>::PrepareOutput>, <T as Transaction2Pc>::PrepareError>>
+        where T: TransactionTree<Tid = Guid, Pid = Guid, Cid = Guid, Node = T, Status = Transaction2PcStatus>
+    {
+        let mgr = self.clone();
+
+        async move {
+            if tr.is_require_persistence() {
+                //只为需要持久化的根事务，分配提交唯一id
+                tr.set_commit_uid(alloc_commit_uid(&mgr.0.uid_gen, &tr)); //设置根事务的提交唯一id
+            }
+
+            if tr.is_concurrent_prepare() {
+                //需要并发预提交，一般用于远端预提交
+                let mut map_reduce = mgr.0.rt.map_reduce(tr.children_len());
+                let childs: Vec<<T as TransactionTree>::Node> = tr.to_children().collect();
+
+                //映射子事务的预提交
+                for child in childs {
+                    let child_uid = child.get_transaction_uid();
+                    let prepare_uid = child.get_prepare_uid();
+
+                    if child.is_unit() {
+                        //当前事务的子事务是单元事务
+                        if child.is_require_persistence() {
+                            //只为需要持久化的子事务，分配提交唯一id
+                            child.set_commit_uid(alloc_commit_uid(&mgr.0.uid_gen, &tr)); //设置子单元事务的提交唯一id
+                        }
+                        let child_copy = child.clone();
+
+                        if let Err(e) = map_reduce.map(mgr.0.rt.clone(), async move {
+                            //执行子单元事务的预提交
+                            child_copy.set_status(Transaction2PcStatus::Prepareing); //更新子单元事务状态为正在预提交
+
+                            match child_copy.prepare_conflicts().await {
+                                Err(e) => {
+                                    //子事务预提交失败
+                                    debug!("Prepare child transaction conflicts failed, type: unit, status: {:?}, reason: {:?}",
+                                        child_copy.get_status(),
+                                        e);
+                                    child_copy.set_status(Transaction2PcStatus::PrepareFailed); //更新子单元事务状态为预提交失败
+                                    Err(Error::new(ErrorKind::Other,
+                                                   format!("Prepare children conflicts failed, type: unit, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}",
+                                                           child_copy.get_transaction_uid(),
+                                                           child_copy.get_prepare_uid(),
+                                                           e)))
+                                },
+                                Ok(output) => {
+                                    //子事务预提交成功
+                                    child_copy.set_status(Transaction2PcStatus::Prepared); //更新子单元事务状态为已预提交
+                                    Ok(output)
+                                },
+                            }
+                        }) {
+                            //映射子事务的预提交操作失败
+                            debug!("Prepare child transaction conflicts failed, type: unit, status: {:?}, reason: {:?}",
+                                child.get_status(),
+                                e);
+                            child.set_status(Transaction2PcStatus::PrepareFailed); //更新子单元事务状态为预提交失败
+                            return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal,
+                                                                                                  format!("Map children prepare conflicts failed, type: unit, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}",
+                                                                                                          child_uid,
+                                                                                                          prepare_uid,
+                                                                                                          e)));
+                        };
+                    } else if child.is_tree() {
+                        //当前事务的子事务是事务树
+                        let mgr_copy = mgr.clone();
+
+                        if let Err(e) = map_reduce.map(mgr.0.rt.clone(), async move {
+                            //执行子事务树的预提交
+                            let child_uid = child.get_transaction_uid();
+                            let prepare_uid = child.get_prepare_uid();
+
+                            match mgr_copy.prepare_conflicts(child).await {
+                                Err(e) => {
+                                    //子事务预提交失败
+                                    debug!("Prepare child transaction conflicts failed, type: tree, uid: {:?}, reason: {:?}",
+                                        (&child_uid, &prepare_uid),
+                                        e);
+                                    Err(Error::new(ErrorKind::Other,
+                                                   format!("Prepare children conflicts failed, type: tree, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}",
+                                                           child_uid,
+                                                           prepare_uid,
+                                                           e)))
+                                },
+                                Ok(output) => {
+                                    //子事务预提交成功
+                                    Ok(output)
+                                },
+                            }
+                        }) {
+                            //映射子事务的预提交操作失败
+                            debug!("Prepare child transaction conflicts failed, type: tree, status: {:?}, reason: {:?}",
+                                tr.get_status(),
+                                e);
+                            return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal,
+                                                                                                  format!("Map children prepare conflicts failed, type: tree, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}",
+                                                                                                          child_uid,
+                                                                                                          prepare_uid,
+                                                                                                          e)));
+                        };
+                    } else {
+                        //当前事务的子事务是无效的事务
+                        warn!("Prepare child transaction conflicts failed, type: invalid, status: {:?}, reason: invalid transaction type",
+                            tr.get_status());
+                        child.set_status(Transaction2PcStatus::PrepareFailed); //更新子事务状态为预提交失败
+                        return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal,
+                                                                                              format!("Prepare transaction conflicts failed, child_uid: {:?}, prepare_uid: {:?}, reason: invalid transaction type",
+                                                                                                      child_uid,
+                                                                                                      prepare_uid)));
+                    }
+                }
+
+                //归并子事务的预提交
+                match map_reduce.reduce(true).await {
+                    Err(e) => {
+                        //归并子事务的预提交操作失败
+                        debug!("Prepare child transaction conflicts failed,status: {:?}, reason: {:?}",
+                            tr.get_status(),
+                            e);
+                        Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal,
+                                                                                       format!("Reduce children prepare conflicts failed, type: tree, transaction_uid: {:?}, prepare_uid: {:?}, reason: {:?}",
+                                                                                               tr.get_transaction_uid(),
+                                                                                               tr.get_prepare_uid(),
+                                                                                               e)))
+                    },
+                    Ok(results) => {
+                        //归并子事务的预提交操作成功
+                        let mut childs_output: Vec<u8> = Vec::new();
+                        for result in results {
+                            match result {
+                                Err(e) => {
+                                    //子事务预提交失败
+                                    return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, e));
+                                },
+                                Ok(child_output) => {
+                                    //子事务预提交成功，则将返回的预提交输出写入二进制缓冲区
+                                    if let Some(child_output) = child_output {
+                                        //子事务是可写事务
+                                        let buf = child_output.as_ref();
+                                        if buf.len() > 0 {
+                                            //预提交输出长度大于0
+                                            childs_output.put_slice(buf);
+                                        }
+                                    }
+                                },
+                            }
+                        }
+
+                        //所有子事务预提交已成功，则执行根事务预提交
+                        match tr.prepare_conflicts().await {
+                            Err(e) => {
+                                //根事务提交失败
+                                debug!("Prepare root transaction conflicts failed, status: {:?}, reason: {:?}",
+                                    tr.get_status(),
+                                    e);
+                                Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal,
+                                                                                               format!("Prepare root conflicts failed, type: tree, transaction_uid: {:?}, prepare_uid: {:?}, reason: {:?}",
+                                                                                                       tr.get_transaction_uid(),
+                                                                                                       tr.get_prepare_uid(),
+                                                                                                       e)))
+                            },
+                            Ok(output) => {
+                                //根事务预提交成功，则将返回的预提交输出写入二进制缓冲区
+                                if let Some(mut output) = output {
+                                    //根事务是可写事务
+                                    if childs_output.len() > 0 {
+                                        //所有子事务的预提交输出长度大于0
+                                        output.put_slice(childs_output.as_ref());
+                                    }
+
+                                    Ok(Some(output))
+                                } else {
+                                    //根事务是只读事务
+                                    Ok(None)
+                                }
+                            },
+                        }
+                    }
+                }
+            } else {
+                //不需要并发预提交，一般用于本地预提交
+                let childs: Vec<<T as TransactionTree>::Node> = tr.to_children().collect();
+                let mut childs_output: Vec<u8> = Vec::new();
+
+                for child in childs {
+                    if child.is_unit() {
+                        //当前事务的子事务是单元事务，则执行子单元事务的预提交
+                        if child.is_require_persistence() {
+                            //只为需要持久化的子事务，分配提交唯一id
+                            child.set_commit_uid(alloc_commit_uid(&mgr.0.uid_gen, &tr)); //设置子单元事务的提交唯一id
+                        }
+                        child.set_status(Transaction2PcStatus::Prepareing); //更新子单元事务状态为正在预提交
+
+                        match child.prepare_conflicts().await {
+                            Err(e) => {
+                                //子事务预提交失败
+                                debug!("Prepare child transaction conflicts failed, type: unit, status: {:?}, reason: {:?}",
+                                    child.get_status(),
+                                    e);
+                                child.set_status(Transaction2PcStatus::PrepareFailed); //更新子单元事务状态为预提交失败
+                                return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal,
+                                                                                                      format!("Prepare children conflicts failed, type: unit, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}",
+                                                                                                              child.get_transaction_uid(),
+                                                                                                              child.get_prepare_uid(),
+                                                                                                              e)));
+                            },
+                            Ok(child_output) => {
+                                //子事务预提交成功，则将返回的预提交输出写入二进制缓冲区
+                                child.set_status(Transaction2PcStatus::Prepared); //更新子单元事务状态为已预提交
+
+                                if let Some(child_output) = child_output {
+                                    //子事务是可写事务
+                                    let buf = child_output.as_ref();
+                                    if buf.len() > 0 {
+                                        //预提交输出长度大于0
+                                        childs_output.put_slice(buf);
+                                    }
+                                }
+                            },
+                        }
+                    } else if child.is_tree() {
+                        //当前事务的子事务是事务树，则执行子事务树的预提交
+                        let child_uid = child.get_transaction_uid();
+                        let prepare_uid = child.get_prepare_uid();
+
+                        match mgr.prepare_conflicts(child).await {
+                            Err(e) => {
+                                //子事务预提交失败
+                                debug!("Prepare child transaction conflicts failed, type: tree, status: {:?}, reason: {:?}",
+                                    tr.get_status(),
+                                    e);
+                                return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal,
+                                                                                                      format!("Prepare children conflicts failed, type: tree, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}",
+                                                                                                              child_uid, prepare_uid,
+                                                                                                              e)));
+                            },
+                            Ok(child_output) => {
+                                //子事务预提交成功，则将返回的预提交输出写入二进制缓冲区
+                                if let Some(child_output) = child_output {
+                                    //子事务是可写事务
+                                    let buf = child_output.as_ref();
+                                    if buf.len() > 0 {
+                                        //预提交输出长度大于0
+                                        childs_output.put_slice(buf);
+                                    }
+                                }
+                            },
+                        }
+                    } else {
+                        //当前事务的子事务是无效的事务
+                        debug!("Prepare child transaction conflicts failed, type: invalid, status: {:?}, reason: invalid transaction type",
+                            child.get_status());
+                        child.set_status(Transaction2PcStatus::PrepareFailed); //更新子事务状态为预提交失败
+                        return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal,
+                                                                                              format!("Prepare transaction conflicts failed, child_uid: {:?}, prepare_uid: {:?}, reason: invalid transaction type",
+                                                                                                      child.get_transaction_uid(),
+                                                                                                      child.get_prepare_uid())));
+                    }
+                }
+
+                //所有子事务预提交已成功，则执行根事务预提交
+                match tr.prepare_conflicts().await {
+                    Err(e) => {
+                        //根事务提交失败
+                        debug!("Prepare root transaction conflicts failed, status: {:?}, reason: {:?}",
+                            tr.get_status(),
+                            e);
+                        Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal,
+                                                                                       format!("Prepare root conflicts failed, type: tree, transaction_uid: {:?}, prepare_uid: {:?}, reason: {:?}",
+                                                                                               tr.get_transaction_uid(),
+                                                                                               tr.get_prepare_uid(),
+                                                                                               e)))
+                    },
+                    Ok(output) => {
+                        //根事务预提交成功，则将返回的预提交输出写入二进制缓冲区
+                        if let Some(mut output) = output {
+                            //根事务是可写事务
+                            if childs_output.len() > 0 {
+                                //所有子事务的预提交输出长度大于0
+                                output.put_slice(childs_output.as_ref());
+                            }
+
+                            Ok(Some(output))
+                        } else {
+                            //根事务是只读事务
+                            Ok(None)
+                        }
+                    },
+                }
+            }
+        }.boxed()
+    }
+
     /// 异步提交，需要将当前事务预提交成功后返回的数据写入提交日志
     pub async fn commit<T>(&self,
                            tr: T,
