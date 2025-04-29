@@ -627,7 +627,8 @@ impl<
     /// 异步预提交，成功返回需要写入提交日志的数据，失败返回预提交冲突的首个表名和关键字
     pub async fn prepare_conflicts<T>(&self, tr: T)
         -> Result<Option<<T as Transaction2Pc>::PrepareOutput>, <T as Transaction2Pc>::PrepareError>
-        where T: TransactionTree<Tid = Guid, Pid = Guid, Cid = Guid, Node = T, Status = Transaction2PcStatus>
+        where T: TransactionTree<Tid = Guid, Pid = Guid, Cid = Guid, Node = T, Status = Transaction2PcStatus>,
+              <T as Transaction2Pc>::PrepareError: Send,
     {
         let current_tr_status = tr.get_status();
         if current_tr_status != Transaction2PcStatus::Inited
@@ -676,7 +677,8 @@ impl<
     // 可写子事务的异步预提交，失败返回预提交冲突的首个表名和关键字
     fn prepare_childrens_conflicts<T>(&self, tr: T)
         -> BoxFuture<Result<Option<<T as Transaction2Pc>::PrepareOutput>, <T as Transaction2Pc>::PrepareError>>
-        where T: TransactionTree<Tid = Guid, Pid = Guid, Cid = Guid, Node = T, Status = Transaction2PcStatus>
+        where T: TransactionTree<Tid = Guid, Pid = Guid, Cid = Guid, Node = T, Status = Transaction2PcStatus>,
+              <T as Transaction2Pc>::PrepareError: Send,
     {
         let mgr = self.clone();
 
@@ -715,16 +717,12 @@ impl<
                                         child_copy.get_status(),
                                         e);
                                     child_copy.set_status(Transaction2PcStatus::PrepareFailed); //更新子单元事务状态为预提交失败
-                                    Err(Error::new(ErrorKind::Other,
-                                                   format!("Prepare children conflicts failed, type: unit, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}",
-                                                           child_copy.get_transaction_uid(),
-                                                           child_copy.get_prepare_uid(),
-                                                           e)))
+                                    Ok(Err(e))
                                 },
                                 Ok(output) => {
                                     //子事务预提交成功
                                     child_copy.set_status(Transaction2PcStatus::Prepared); //更新子单元事务状态为已预提交
-                                    Ok(output)
+                                    Ok(Ok(output))
                                 },
                             }
                         }) {
@@ -754,15 +752,11 @@ impl<
                                     debug!("Prepare child transaction conflicts failed, type: tree, uid: {:?}, reason: {:?}",
                                         (&child_uid, &prepare_uid),
                                         e);
-                                    Err(Error::new(ErrorKind::Other,
-                                                   format!("Prepare children conflicts failed, type: tree, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}",
-                                                           child_uid,
-                                                           prepare_uid,
-                                                           e)))
+                                    Ok(Err(e))
                                 },
                                 Ok(output) => {
                                     //子事务预提交成功
-                                    Ok(output)
+                                    Ok(Ok(output))
                                 },
                             }
                         }) {
@@ -810,7 +804,11 @@ impl<
                                     //子事务预提交失败
                                     return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal, e));
                                 },
-                                Ok(child_output) => {
+                                Ok(Err(e)) => {
+                                    //子事务预提交失败
+                                    return Err(e);
+                                },
+                                Ok(Ok(child_output)) => {
                                     //子事务预提交成功，则将返回的预提交输出写入二进制缓冲区
                                     if let Some(child_output) = child_output {
                                         //子事务是可写事务
@@ -831,11 +829,7 @@ impl<
                                 debug!("Prepare root transaction conflicts failed, status: {:?}, reason: {:?}",
                                     tr.get_status(),
                                     e);
-                                Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal,
-                                                                                               format!("Prepare root conflicts failed, type: tree, transaction_uid: {:?}, prepare_uid: {:?}, reason: {:?}",
-                                                                                                       tr.get_transaction_uid(),
-                                                                                                       tr.get_prepare_uid(),
-                                                                                                       e)))
+                                Err(e)
                             },
                             Ok(output) => {
                                 //根事务预提交成功，则将返回的预提交输出写入二进制缓冲区
@@ -876,11 +870,7 @@ impl<
                                     child.get_status(),
                                     e);
                                 child.set_status(Transaction2PcStatus::PrepareFailed); //更新子单元事务状态为预提交失败
-                                return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal,
-                                                                                                      format!("Prepare children conflicts failed, type: unit, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}",
-                                                                                                              child.get_transaction_uid(),
-                                                                                                              child.get_prepare_uid(),
-                                                                                                              e)));
+                                return Err(e);
                             },
                             Ok(child_output) => {
                                 //子事务预提交成功，则将返回的预提交输出写入二进制缓冲区
@@ -898,19 +888,13 @@ impl<
                         }
                     } else if child.is_tree() {
                         //当前事务的子事务是事务树，则执行子事务树的预提交
-                        let child_uid = child.get_transaction_uid();
-                        let prepare_uid = child.get_prepare_uid();
-
                         match mgr.prepare_conflicts(child).await {
                             Err(e) => {
                                 //子事务预提交失败
                                 debug!("Prepare child transaction conflicts failed, type: tree, status: {:?}, reason: {:?}",
                                     tr.get_status(),
                                     e);
-                                return Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal,
-                                                                                                      format!("Prepare children conflicts failed, type: tree, child_uid: {:?}, prepare_uid: {:?}, reason: {:?}",
-                                                                                                              child_uid, prepare_uid,
-                                                                                                              e)));
+                                return Err(e);
                             },
                             Ok(child_output) => {
                                 //子事务预提交成功，则将返回的预提交输出写入二进制缓冲区
@@ -943,11 +927,7 @@ impl<
                         debug!("Prepare root transaction conflicts failed, status: {:?}, reason: {:?}",
                             tr.get_status(),
                             e);
-                        Err(<T as Transaction2Pc>::PrepareError::new_transaction_error(ErrorLevel::Normal,
-                                                                                       format!("Prepare root conflicts failed, type: tree, transaction_uid: {:?}, prepare_uid: {:?}, reason: {:?}",
-                                                                                               tr.get_transaction_uid(),
-                                                                                               tr.get_prepare_uid(),
-                                                                                               e)))
+                        Err(e)
                     },
                     Ok(output) => {
                         //根事务预提交成功，则将返回的预提交输出写入二进制缓冲区
