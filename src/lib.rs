@@ -121,10 +121,7 @@ pub trait Transaction2Pc: AsyncTransaction + Clone {
     fn prepare(&self) -> BoxFuture<Result<Option<<Self as Transaction2Pc>::PrepareOutput>, <Self as Transaction2Pc>::PrepareError>>;
 
     /// 异步预提交，只读事务预提交成功不会返回输出数据，可写事务预提交成功会返回输出数据，失败返回预提交冲突时的详细信息
-    fn prepare_conflicts(&self) -> BoxFuture<Result<Option<<Self as Transaction2Pc>::PrepareOutput>, <Self as Transaction2Pc>::PrepareError>> {
-        //默认调用异步预提交
-        self.prepare()
-    }
+    fn prepare_conflicts(&self) -> BoxFuture<Result<Option<<Self as Transaction2Pc>::PrepareOutput>, <Self as Transaction2Pc>::PrepareError>>;
 
     /// 异步延迟提交
     fn commit(&self, confirm: <Self as Transaction2Pc>::CommitConfirm)
