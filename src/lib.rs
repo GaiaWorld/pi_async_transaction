@@ -215,6 +215,17 @@ pub trait AsyncCommitLog: Clone + Send + Sync + 'static {
         where B: BufMut + AsRef<[u8]> + From<Vec<u8>> + Send + Sized + 'static,
               F: Fn(Self::Cid, B) -> IOResult<()> + Send + Sync + 'static;
 
+    /// 开始按文件边界重播提交日志。
+    /// 主回调逐条接收提交日志记录；次回调在一个物理 commit log 文件内的全部记录都已成功回调后触发一次。
+    /// 注意这里的“文件完成”只表示该文件已完整重播到上层，不表示该文件已经完成 replay confirm。
+    /// 重播确认仍沿用 `confirm_replay -> finish_replay` 的原有统一确认流程。
+    fn start_replay_by_file<B, F, G>(&self,
+                                     callback: Arc<F>,
+                                     file_finished: Arc<G>) -> BoxFuture<'static, IOResult<(usize, usize)>>
+        where B: BufMut + AsRef<[u8]> + From<Vec<u8>> + Send + Sized + 'static,
+              F: Fn(Self::Cid, B) -> IOResult<()> + Send + Sync + 'static,
+              G: Fn() -> IOResult<()> + Send + Sync + 'static;
+
     /// 异步追加重播的提交日志
     fn append_replay<B>(&self, commit_uid: Self::Cid, log: B) -> BoxFuture<'static, IOResult<Self::C>>
         where B: BufMut + AsRef<[u8]> + Send + Sized + 'static;
@@ -246,8 +257,4 @@ pub trait AsyncCommitLog: Clone + Send + Sync + 'static {
     /// 确认提交的日志总数量
     fn confirm_total_count(&self) -> usize;
 }
-
-
-
-
 

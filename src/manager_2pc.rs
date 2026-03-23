@@ -1430,6 +1430,20 @@ impl<
         self.0.commit_logger.start_replay(Arc::new(callback)).await
     }
 
+    /// 按 commit log 文件边界重播提交日志。
+    /// 主回调逐条接收提交日志记录；次回调在一个物理 commit log 文件内的全部记录都已成功回调后触发一次。
+    /// 这个接口只暴露文件级 replay 完成通知，不改变 replay confirm 仍由 `finish_replay` 统一执行的既有语义。
+    pub async fn replay_commit_log_by_file<B>(&self,
+                                              callback: impl Fn(Guid, B) -> IOResult<()> + Send + Sync + 'static,
+                                              file_finished: impl Fn() -> IOResult<()> + Send + Sync + 'static)
+                                              -> IOResult<(usize, usize)>
+        where B: BufMut + AsRef<[u8]> + From<Vec<u8>> + Send + Sized + 'static {
+        self.0
+            .commit_logger
+            .start_replay_by_file(Arc::new(callback), Arc::new(file_finished))
+            .await
+    }
+
     /// 重播提交，提交重播未确认的提交日志的事务
     /// 为事务设置指定的事务唯一id和提交唯一id
     /// 忽略预提交和提交日志的过程
