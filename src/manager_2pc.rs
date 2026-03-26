@@ -1506,6 +1506,13 @@ impl<
     pub async fn finish_replay(&self) -> IOResult<()> {
         self.0.commit_logger.finish_replay().await
     }
+
+    /// 推进按文件批次重播时的 replay 检查点。
+    /// 该接口只用于像 try_quick_repair 这种“先解析/缓冲文件，再由消费侧真正 replay 文件批次”的结构，
+    /// 以保证事务注册到检查点的时机与真实 replay 时机对齐。
+    pub async fn advance_replay_check_point(&self) -> IOResult<()> {
+        self.0.commit_logger.advance_replay_check_point().await
+    }
 }
 
 // 分配一个唯一的事务id

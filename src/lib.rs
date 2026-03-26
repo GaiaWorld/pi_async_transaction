@@ -239,6 +239,12 @@ pub trait AsyncCommitLog: Clone + Send + Sync + 'static {
     /// 完成提交日志的重播
     fn finish_replay(&self) -> BoxFuture<'static, IOResult<()>>;
 
+    /// 推进重播过程中的文件级检查点。
+    /// 仅供按文件批次延后执行真正 replay 的实现使用：
+    /// 当上层确认“当前物理 commit log 文件批次已经真正 replay/flush 完成”后，
+    /// 再调用此接口将后续 replay 事务切换到下一个物理文件对应的检查点。
+    fn advance_replay_check_point(&self) -> BoxFuture<'static, IOResult<()>>;
+
     /// 获取指定的等待确认提交的事务在哪个检查点上
     fn check_point_of(&self, commit_uid: Self::Cid) -> BoxFuture<'static, Option<usize>>;
 
@@ -257,4 +263,3 @@ pub trait AsyncCommitLog: Clone + Send + Sync + 'static {
     /// 确认提交的日志总数量
     fn confirm_total_count(&self) -> usize;
 }
-
