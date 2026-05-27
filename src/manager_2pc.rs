@@ -40,6 +40,24 @@ const DEFAULT_TRANSACTION_COMMIT_CTRL_ID: u16 = 2;
 */
 const DEFAULT_MAX_PARALLEL_TRANSACTION_LIMIT: usize = usize::MAX;
 
+#[inline]
+fn trace_commit<T>(event: &str, tr: &T, extra: &str)
+    where T: TransactionTree<Node = T, Status = Transaction2PcStatus> {
+    eprintln!(
+        "pi_async_transaction {} transaction_uid={:?} commit_uid={:?} status={:?} is_tree={} is_unit={} is_writable={} require_persistence={} children_len={}{}",
+        event,
+        tr.get_transaction_uid(),
+        tr.get_commit_uid(),
+        tr.get_status(),
+        tr.is_tree(),
+        tr.is_unit(),
+        tr.is_writable(),
+        tr.is_require_persistence(),
+        tr.children_len(),
+        extra,
+    );
+}
+
 ///
 /// 两阶段提交事务的状态
 ///
@@ -958,6 +976,7 @@ impl<
         where T: TransactionTree<Cid = Guid, Node = T, Status = Transaction2PcStatus> {
 
         let current_tr_status = tr.get_status();
+        trace_commit("commit_enter", &tr, "");
         if current_tr_status != Transaction2PcStatus::Prepared {
             //事务未完成预提交，则不允许提交日志
             warn!("Commmit root transaction failed, status: {:?}, reason: invalid transaction status", current_tr_status);
@@ -975,24 +994,30 @@ impl<
 
             self.0.commit_produced.fetch_add(1, Ordering::Relaxed); //增加开始提交数量
             tr.set_status(Transaction2PcStatus::LogCommiting); //更新事务状态为正在提交日志
+            trace_commit("commit_append_begin", &tr, "");
 
             match self.0.commit_logger.append(tr.get_commit_uid().unwrap(),
                                               input).await {
                 Err(e) => {
+                    trace_commit("commit_append_err", &tr, &format!(" error={:?}", e));
                     //同步追加提交日志失败
                     warn!("Commmit root transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                     tr.set_status(Transaction2PcStatus::LogCommitFailed); //更新事务状态为提交日志失败
                     return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Normal, format!("Commit transaction failed, type: tree, transaction_uid: {:?}, commit_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_commit_uid(), e)));
                 },
                 Ok(log_handle) => {
+                    trace_commit("commit_append_ok", &tr, "");
                     //同步追加提交日志成功，则立即异步刷新提交日志
+                    trace_commit("commit_flush_begin", &tr, "");
                     if let Err(e) = self.0.commit_logger.flush(log_handle).await {
+                        trace_commit("commit_flush_err", &tr, &format!(" error={:?}", e));
                         //异步刷新提交日志失败
                         warn!("Commmit root transaction failed, status: {:?}, reason: {:?}", tr.get_status(), e);
                         tr.set_status(Transaction2PcStatus::LogCommitFailed); //更新事务状态为提交日志失败
                         return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Normal, format!("Commit transaction failed, type: tree, transaction_uid: {:?}, commit_uid: {:?}, reason: {:?}", tr.get_transaction_uid(), tr.get_commit_uid(), e)));
                     }
 
+                    trace_commit("commit_flush_ok", &tr, "");
                     tr.set_status(Transaction2PcStatus::LogCommited); //更新事务状态为已提交日志
                 },
             }
@@ -1013,7 +1038,13 @@ impl<
             return Err(<T as AsyncTransaction>::Error::new_transaction_error(ErrorLevel::Normal, format!("Commit root failed, type: unit, transaction_uid: {:?}, commit_uid: {:?}, status: {:?}, reason: invalid transaction status", tr.get_transaction_uid(), tr.get_commit_uid(), current_tr_status)));
         }
 
+        trace_commit("commit_confirm_begin", &tr, "");
         let result = self.commit_confirm(tr.clone(), confirm).await;
+
+        match &result {
+            Ok(_) => trace_commit("commit_confirm_ok", &tr, ""),
+            Err(e) => trace_commit("commit_confirm_err", &tr, &format!(" error={:?}", e)),
+        }
 
         if result.is_err() {
             //提交事务失败
